@@ -1,9 +1,11 @@
-import { AppBar, Badge, IconButton, Toolbar, Typography } from "@mui/material";
+import { AppBar, Badge, IconButton, Toolbar, Typography, Button } from "@mui/material";
 import NotificationsIcon from "@mui/icons-material/Notifications";
 import { useNotifications } from "./Notifications";
+import { useAuth } from "../utils/AuthContext";
 
 export default function AppHeader() {
   const { unread } = useNotifications();
+  const { isAuthenticated, logout } = useAuth();
   return (
     <AppBar position="fixed" color="secondary" sx={{ zIndex: 1201 }}>
       <Toolbar>
@@ -13,6 +15,11 @@ export default function AppHeader() {
             <NotificationsIcon />
           </Badge>
         </IconButton>
+        {isAuthenticated && (
+          <Button color="inherit" onClick={logout} sx={{ ml: 2 }}>
+            Logout
+          </Button>
+        )}
       </Toolbar>
     </AppBar>
   );
