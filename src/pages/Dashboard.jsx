@@ -1,538 +1,447 @@
-import React from "react";
-import api from "../api";
-import { 
-  Grid, 
-  Typography, 
-  Card, 
-  CardContent, 
-  Box, 
-  Paper, 
-  LinearProgress,
-  Avatar,
-  IconButton,
-  Tooltip,
-  Chip
-} from "@mui/material";
-import { 
-  Assessment,
-  CheckCircle,
-  Pending,
-  PlayArrow,
-  TrendingUp,
-  LocationOn,
-  Refresh,
-  Dashboard as DashboardIcon
-} from "@mui/icons-material";
-import { useEffect, useState } from "react";
-import ReactEcharts from "echarts-for-react";
-import MapWidget from "../components/MapWidget";
 
-// Enhanced StatsCard component
-const EnhancedStatsCard = ({ label, value, icon, gradient, trend }) => {
-  return (
-    <Card 
-      elevation={4}
-      sx={{ 
-        background: gradient,
-        color: 'white',
-        height: '140px',
-        transition: 'all 0.3s ease-in-out',
-        '&:hover': {
-          transform: 'translateY(-8px)',
-          boxShadow: '0 12px 24px rgba(0,0,0,0.2)',
-        }
-      }}
-    >
-      <CardContent sx={{ 
-        height: '100%', 
+import React, { useEffect, useState } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import { Box, Typography, Chip, CircularProgress, Alert } from '@mui/material';
+import { LocationOn, Warning, CheckCircle, Pending, PlayArrow } from '@mui/icons-material';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+import api from '../api';
+
+// Fix for default markers in react-leaflet
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
+
+// Custom marker icons for different status
+const createCustomIcon = (color, status) => {
+  const iconHtml = `
+    <div style="
+      background-color: ${color};
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      border: 3px solid white;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+      font-weight: bold;
+      font-size: 12px;
+    ">
+      ${status === 'Resolved' ? '✓' : status === 'In Progress' ? '⏳' : '!'}
+    </div>
+  `;
+
+  return L.divIcon({
+    html: iconHtml,
+    className: 'custom-marker',
+    iconSize: [30, 30],
+    iconAnchor: [15, 15],
+    popupAnchor: [0, -15]
+  });
+};
+
+// Component to fit map bounds to markers
+const FitBounds = ({ positions }) => {
+  const map = useMap();
+  
+  useEffect(() => {
+    if (positions.length > 0) {
+      const validPositions = positions.filter(pos => 
+        pos.latitude && pos.longitude && 
+        pos.latitude !== 0 && pos.longitude !== 0
+      );
+      
+      if (validPositions.length > 0) {
+        const bounds = validPositions.map(pos => [pos.latitude, pos.longitude]);
+        map.fitBounds(bounds, { padding: [20, 20] });
+      }
+    }
+  }, [positions, map]);
+
+  return null;
+};
+
+const MapWidget = () => {
+  const [issues, setIssues] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [stats, setStats] = useState({
+    total: 0,
+    pending: 0,
+    inProgress: 0,
+    resolved: 0
+  });
+
+  useEffect(() => {
+    const fetchIssues = async () => {
+      try {
+        setLoading(true);
+        // Use Axios with JWT
+        const response = await api.get('/posts/admin/posts');
+        const data = response.data;
+
+        // Filter out issues without valid coordinates
+        const validIssues = data.filter(issue =>
+          issue.location?.coordinates &&
+          issue.location.coordinates[1] !== 0 &&
+          issue.location.coordinates[0] !== 0
+        ).map(issue => ({
+          id: issue._id,
+          latitude: issue.location.coordinates[1],
+          longitude: issue.location.coordinates[0],
+          description: issue.description || 'No description',
+          status: issue.status || 'Pending',
+          userName: issue.user?.username || issue.userName || 'Anonymous',
+          userEmail: issue.user?.email || issue.userEmail || 'N/A',
+          createdAt: issue.createdAt,
+          media: issue.media || []
+        }));
+
+        setIssues(validIssues);
+
+        // Calculate statistics
+        const totalIssues = validIssues.length;
+        const pendingCount = validIssues.filter(issue => issue.status === 'Pending').length;
+        const inProgressCount = validIssues.filter(issue => issue.status === 'In Progress').length;
+        const resolvedCount = validIssues.filter(issue => issue.status === 'Resolved').length;
+
+        setStats({
+          total: totalIssues,
+          pending: pendingCount,
+          inProgress: inProgressCount,
+          resolved: resolvedCount
+        });
+
+        setError(null);
+      } catch (err) {
+        console.error('Error fetching issues:', err);
+        setError('Failed to load map data');
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    fetchIssues();
+  }, []);
+
+  const getMarkerColor = (status) => {
+    switch (status) {
+      case 'Resolved': return '#4caf50';
+      case 'In Progress': return '#2196f3';
+      default: return '#ff9800';
+    }
+  };
+
+  const getStatusIcon = (status) => {
+    switch (status) {
+      case 'Resolved': return <CheckCircle fontSize="small" />;
+      case 'In Progress': return <PlayArrow fontSize="small" />;
+      default: return <Pending fontSize="small" />;
+    }
+  };
+
+  const getStatusColor = (status) => {
+    switch (status) {
+      case 'Resolved': return 'success';
+      case 'In Progress': return 'primary';
+      default: return 'warning';
+    }
+  };
+
+  // Default center (Chennai, Tamil Nadu)
+  const defaultCenter = [13.0827, 80.2707];
+
+  if (loading) {
+    return (
+      <Box sx={{ 
+        height: '400px', 
         display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center',
         flexDirection: 'column',
-        justifyContent: 'space-between',
-        position: 'relative',
-        overflow: 'hidden'
+        gap: 2
       }}>
-        {/* Background Icon */}
-        <Box sx={{ 
-          position: 'absolute', 
-          top: -10, 
-          right: -10, 
-          opacity: 0.2 
+        <CircularProgress />
+        <Typography variant="body2" color="text.secondary">
+          Loading map data...
+        </Typography>
+      </Box>
+    );
+  }
+
+  if (error) {
+    return (
+      <Box sx={{ p: 2 }}>
+        <Alert severity="error" icon={<Warning />}>
+          {error}
+        </Alert>
+      </Box>
+    );
+  }
+
+  if (issues.length === 0) {
+    return (
+      <Box sx={{ 
+        height: '400px', 
+        display: 'flex', 
+        alignItems: 'center', 
+        justifyContent: 'center',
+        flexDirection: 'column',
+        gap: 2,
+        bgcolor: '#f5f5f5',
+        borderRadius: 1
+      }}>
+        <LocationOn sx={{ fontSize: 60, color: 'text.secondary' }} />
+        <Typography variant="h6" color="text.secondary">
+          No issues with location data found
+        </Typography>
+      </Box>
+    );
+  }
+
+  return (
+    <Box>
+      {/* Stats Cards Row */}
+      <Box sx={{ 
+        display: 'grid', 
+        gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
+        gap: 2,
+        mb: 3,
+        p: 2,
+        bgcolor: '#f8f9fa',
+        borderRadius: 2
+      }}>
+        {/* Total Issues */}
+        <Box sx={{
+          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+          color: 'white',
+          p: 2,
+          borderRadius: 2,
+          textAlign: 'center',
+          boxShadow: 2
         }}>
-          {React.cloneElement(icon, { sx: { fontSize: 80 } })}
-        </Box>
-        
-        {/* Content */}
-        <Box sx={{ zIndex: 1 }}>
-          <Typography variant="h3" fontWeight="bold" gutterBottom>
-            {value.toLocaleString()}
+          <Typography variant="h4" fontWeight="bold">
+            {loading ? "..." : stats.total}
           </Typography>
-          <Typography variant="body1" sx={{ opacity: 0.9 }}>
-            {label}
+          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+            Total Issues
           </Typography>
         </Box>
-        
-        {/* Trend indicator */}
-        {trend && (
-          <Box sx={{ display: 'flex', alignItems: 'center', mt: 1 }}>
-            <TrendingUp fontSize="small" />
-            <Typography variant="caption" sx={{ ml: 0.5, opacity: 0.8 }}>
-              {trend}
-            </Typography>
+
+        {/* Pending */}
+        <Box sx={{
+          background: 'linear-gradient(135deg, #ff9800 0%, #ffc107 100%)',
+          color: 'white',
+          p: 2,
+          borderRadius: 2,
+          textAlign: 'center',
+          boxShadow: 2
+        }}>
+          <Typography variant="h4" fontWeight="bold">
+            {loading ? "..." : stats.pending}
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+            Pending
+          </Typography>
+        </Box>
+
+        {/* In Progress */}
+        <Box sx={{
+          background: 'linear-gradient(135deg, #2196f3 0%, #21cbf3 100%)',
+          color: 'white',
+          p: 2,
+          borderRadius: 2,
+          textAlign: 'center',
+          boxShadow: 2
+        }}>
+          <Typography variant="h4" fontWeight="bold">
+            {loading ? "..." : stats.inProgress}
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+            In Progress
+          </Typography>
+        </Box>
+
+        {/* Resolved */}
+        <Box sx={{
+          background: 'linear-gradient(135deg, #4caf50 0%, #8bc34a 100%)',
+          color: 'white',
+          p: 2,
+          borderRadius: 2,
+          textAlign: 'center',
+          boxShadow: 2
+        }}>
+          <Typography variant="h4" fontWeight="bold">
+            {loading ? "..." : stats.resolved}
+          </Typography>
+          <Typography variant="body2" sx={{ opacity: 0.9 }}>
+            Resolved
+          </Typography>
+        </Box>
+      </Box>
+
+      {/* Existing Map Component - Unchanged */}
+      <Box sx={{ height: '500px', borderRadius: 2, overflow: 'hidden', position: 'relative' }}>
+      {/* Map Legend */}
+      <Box sx={{ 
+        position: 'absolute', 
+        top: 10, 
+        right: 10, 
+        zIndex: 1000,
+        bgcolor: 'rgba(255,255,255,0.95)',
+        p: 1.5,
+        borderRadius: 2,
+        boxShadow: 2,
+        backdropFilter: 'blur(5px)'
+      }}>
+        <Typography variant="caption" fontWeight="bold" gutterBottom display="block">
+          Legend
+        </Typography>
+        <Box sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ 
+              width: 12, 
+              height: 12, 
+              borderRadius: '50%', 
+              bgcolor: '#ff9800',
+              border: '2px solid white',
+              boxShadow: 1
+            }} />
+            <Typography variant="caption">Pending</Typography>
           </Box>
-        )}
-      </CardContent>
-    </Card>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ 
+              width: 12, 
+              height: 12, 
+              borderRadius: '50%', 
+              bgcolor: '#2196f3',
+              border: '2px solid white',
+              boxShadow: 1
+            }} />
+            <Typography variant="caption">In Progress</Typography>
+          </Box>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <Box sx={{ 
+              width: 12, 
+              height: 12, 
+              borderRadius: '50%', 
+              bgcolor: '#4caf50',
+              border: '2px solid white',
+              boxShadow: 1
+            }} />
+            <Typography variant="caption">Resolved</Typography>
+          </Box>
+        </Box>
+      </Box>
+
+      {/* Issue Count Badge */}
+      <Box sx={{ 
+        position: 'absolute', 
+        top: 10, 
+        left: 10, 
+        zIndex: 1000
+      }}>
+        <Chip 
+          icon={<LocationOn />}
+          label={`${issues.length} Issues`}
+          color="primary"
+          variant="filled"
+          sx={{ 
+            bgcolor: 'rgba(25, 118, 210, 0.9)',
+            color: 'white',
+            backdropFilter: 'blur(5px)',
+            fontWeight: 'bold'
+          }}
+        />
+      </Box>
+
+      <MapContainer
+        center={defaultCenter}
+        zoom={11}
+        style={{ height: '100%', width: '100%' }}
+        zoomControl={true}
+        scrollWheelZoom={true}
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+        
+        <FitBounds positions={issues} />
+        
+        {issues.map((issue) => (
+          <Marker
+            key={issue.id}
+            position={[issue.latitude, issue.longitude]}
+            icon={createCustomIcon(getMarkerColor(issue.status), issue.status)}
+          >
+            <Popup maxWidth={300} className="custom-popup">
+              <Box sx={{ p: 1, minWidth: 250 }}>
+                {/* Status Chip */}
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
+                  <Chip
+                    icon={getStatusIcon(issue.status)}
+                    label={issue.status}
+                    color={getStatusColor(issue.status)}
+                    size="small"
+                    variant="filled"
+                  />
+                  <Typography variant="caption" color="text.secondary">
+                    {new Date(issue.createdAt).toLocaleDateString()}
+                  </Typography>
+                </Box>
+
+                {/* Description */}
+                <Typography variant="body2" fontWeight="bold" gutterBottom>
+                  {issue.description}
+                </Typography>
+
+                {/* Reporter Info */}
+                <Box sx={{ mb: 1 }}>
+                  <Typography variant="caption" color="text.secondary">
+                    Reported by: <strong>{issue.userName}</strong>
+                  </Typography>
+                </Box>
+
+                {/* Location Coordinates */}
+                <Typography variant="caption" color="text.secondary" display="block">
+                  📍 {issue.latitude.toFixed(6)}, {issue.longitude.toFixed(6)}
+                </Typography>
+
+                {/* Media Count */}
+                {issue.media.length > 0 && (
+                  <Typography variant="caption" color="primary" display="block" sx={{ mt: 0.5 }}>
+                    📎 {issue.media.length} attachment(s)
+                  </Typography>
+                )}
+              </Box>
+            </Popup>
+          </Marker>
+        ))}
+      </MapContainer>
+
+      <style jsx global>{`
+        .custom-popup .leaflet-popup-content-wrapper {
+          border-radius: 8px;
+          box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        
+        .custom-popup .leaflet-popup-content {
+          margin: 0;
+        }
+        
+        .custom-marker {
+          filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+        }
+      `}</style>
+      </Box>
+    </Box>
   );
 };
 
-export default function Dashboard() {
-  const [stats, setStats] = useState({
-    resolved: 0,
-    pending: 0,
-    inProgress: 0,
-    totalReports: 0
-  });
-  const [loading, setLoading] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState(new Date());
-
-  const fetchStats = () => {
-    setLoading(true);
-    api.get("/posts/stats")
-      .then(res => {
-        setStats(res.data);
-        setLastUpdated(new Date());
-        setLoading(false);
-      })
-      .catch(err => {
-        console.error("Error fetching stats:", err);
-        setLoading(false);
-      });
-  };
-
-  useEffect(() => {
-    fetchStats();
-    // Auto-refresh every 5 minutes
-    const interval = setInterval(fetchStats, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  // Enhanced Pie Chart Options
-  const pieOpt = {
-    tooltip: { 
-      trigger: "item",
-      formatter: '{a} <br/>{b}: {c} ({d}%)',
-      backgroundColor: 'rgba(50, 50, 50, 0.9)',
-      borderColor: 'rgba(255, 255, 255, 0.2)',
-      borderWidth: 1,
-      textStyle: {
-        color: '#fff'
-      }
-    },
-    legend: {
-      orient: 'horizontal',
-      bottom: 10,
-      textStyle: {
-        color: '#666',
-        fontSize: 12
-      }
-    },
-    series: [{
-      name: 'Issue Status',
-      type: "pie",
-      radius: ['40%', '70%'],
-      center: ['50%', '45%'],
-      avoidLabelOverlap: false,
-      itemStyle: {
-        borderRadius: 8,
-        borderColor: '#fff',
-        borderWidth: 2
-      },
-      label: {
-        show: false,
-        position: 'center'
-      },
-      emphasis: {
-        label: {
-          show: true,
-          fontSize: 18,
-          fontWeight: 'bold'
-        },
-        itemStyle: {
-          shadowBlur: 10,
-          shadowOffsetX: 0,
-          shadowColor: 'rgba(0, 0, 0, 0.5)'
-        }
-      },
-      labelLine: {
-        show: false
-      },
-      data: [
-        { 
-          name: "Resolved", 
-          value: stats.resolved,
-          itemStyle: { color: '#4caf50' }
-        },
-        { 
-          name: "Pending", 
-          value: stats.pending,
-          itemStyle: { color: '#ff9800' }
-        },
-        { 
-          name: "In Progress", 
-          value: stats.inProgress,
-          itemStyle: { color: '#2196f3' }
-        }
-      ]
-    }]
-  };
-
-  // Bar Chart for trends (bonus chart)
-  const barOpt = {
-    tooltip: {
-      trigger: 'axis',
-      backgroundColor: 'rgba(50, 50, 50, 0.9)',
-      borderColor: 'rgba(255, 255, 255, 0.2)',
-      textStyle: { color: '#fff' }
-    },
-    xAxis: {
-      type: 'category',
-      data: ['Resolved', 'In Progress', 'Pending'],
-      axisLine: { lineStyle: { color: '#e0e0e0' } },
-      axisTick: { lineStyle: { color: '#e0e0e0' } },
-      axisLabel: { color: '#666' }
-    },
-    yAxis: {
-      type: 'value',
-      axisLine: { lineStyle: { color: '#e0e0e0' } },
-      axisTick: { lineStyle: { color: '#e0e0e0' } },
-      axisLabel: { color: '#666' },
-      splitLine: { lineStyle: { color: '#f0f0f0' } }
-    },
-    series: [{
-      data: [
-        { value: stats.resolved, itemStyle: { color: '#4caf50' } },
-        { value: stats.inProgress, itemStyle: { color: '#2196f3' } },
-        { value: stats.pending, itemStyle: { color: '#ff9800' } }
-      ],
-      type: 'bar',
-      borderRadius: [4, 4, 0, 0],
-      barWidth: '60%'
-    }]
-  };
-
-  return (
-    <Box sx={{ m: 3 }}>
-      {/* Header Section */}
-      <Paper 
-        elevation={3} 
-        sx={{ 
-          p: 4, 
-          mb: 4, 
-          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)', 
-          color: 'white',
-          borderRadius: 3
-        }}
-      >
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <Box>
-            <Typography variant="h3" fontWeight="bold" gutterBottom>
-              🏛️ Admin Dashboard
-            </Typography>
-            <Typography variant="h6" sx={{ opacity: 0.9 }}>
-              Real-time monitoring of civic issues and reports
-            </Typography>
-            <Chip 
-              icon={<Assessment />}
-              label={`Last updated: ${lastUpdated.toLocaleTimeString()}`}
-              variant="outlined"
-              sx={{ 
-                mt: 2, 
-                color: 'white', 
-                borderColor: 'rgba(255,255,255,0.3)',
-                '& .MuiChip-icon': { color: 'white' }
-              }}
-            />
-          </Box>
-          <Tooltip title="Refresh Data">
-            <IconButton 
-              onClick={fetchStats}
-              disabled={loading}
-              sx={{ 
-                color: 'white', 
-                bgcolor: 'rgba(255,255,255,0.1)',
-                '&:hover': { bgcolor: 'rgba(255,255,255,0.2)' }
-              }}
-            >
-              <Refresh />
-            </IconButton>
-          </Tooltip>
-        </Box>
-        {loading && <LinearProgress sx={{ mt: 2, bgcolor: 'rgba(255,255,255,0.1)' }} />}
-      </Paper>
-
-      <Grid container spacing={4}>
-        {/* Enhanced Stats Cards */}
-        <Grid item xs={12} sm={6} lg={3}>
-          <EnhancedStatsCard 
-            label="Total Reports" 
-            value={stats.totalReports}
-            icon={<DashboardIcon />}
-            gradient="linear-gradient(135deg, #667eea 0%, #764ba2 100%)"
-            trend="+12% this month"
-          />
-        </Grid>
-        
-        <Grid item xs={12} sm={6} lg={3}>
-          <EnhancedStatsCard 
-            label="Resolved Issues" 
-            value={stats.resolved}
-            icon={<CheckCircle />}
-            gradient="linear-gradient(135deg, #4caf50 0%, #8bc34a 100%)"
-            trend="+8% this week"
-          />
-        </Grid>
-        
-        <Grid item xs={12} sm={6} lg={3}>
-          <EnhancedStatsCard 
-            label="Pending Issues" 
-            value={stats.pending}
-            icon={<Pending />}
-            gradient="linear-gradient(135deg, #ff9800 0%, #ffc107 100%)"
-            trend="Needs attention"
-          />
-        </Grid>
-        
-        <Grid item xs={12} sm={6} lg={3}>
-          <EnhancedStatsCard 
-            label="In Progress" 
-            value={stats.inProgress}
-            icon={<PlayArrow />}
-            gradient="linear-gradient(135deg, #2196f3 0%, #21cbf3 100%)"
-            trend="Active now"
-          />
-        </Grid>
-
-        {/* Map Widget */}
-        <Grid item xs={12} lg={8}>
-          <Card elevation={4} sx={{ borderRadius: 3, overflow: 'hidden' }}>
-            <Box sx={{ 
-              background: 'linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%)', 
-              p: 2,
-              borderBottom: '1px solid #dee2e6'
-            }}>
-              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                <LocationOn color="primary" />
-                <Typography variant="h6" fontWeight="bold">
-                  Issues Map
-                </Typography>
-                <Chip label="Live" color="success" size="small" />
-              </Box>
-            </Box>
-            <CardContent sx={{ p: 0, '&:last-child': { pb: 0 } }}>
-              <MapWidget />
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Charts Section */}
-        <Grid item xs={12} lg={4}>
-          <Grid container spacing={3}>
-            {/* Pie Chart */}
-            <Grid item xs={12}>
-              <Card elevation={4} sx={{ borderRadius: 3, height: '300px' }}>
-                <Box sx={{ 
-                  background: 'linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%)', 
-                  p: 2,
-                  borderBottom: '1px solid #dee2e6'
-                }}>
-                  <Typography variant="h6" fontWeight="bold">
-                    📊 Status Distribution
-                  </Typography>
-                </Box>
-                <CardContent sx={{ height: 'calc(100% - 64px)' }}>
-                  {loading ? (
-                    <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
-                      <Typography color="text.secondary">Loading chart...</Typography>
-                    </Box>
-                  ) : (
-                    <ReactEcharts 
-                      option={pieOpt} 
-                      style={{ height: '100%', width: '100%' }}
-                      opts={{ renderer: 'svg' }}
-                    />
-                  )}
-                </CardContent>
-              </Card>
-            </Grid>
-          </Grid>
-        </Grid>
-
-        {/* Additional Bar Chart */}
-        <Grid item xs={12} md={6}>
-          <Card elevation={4} sx={{ borderRadius: 3 }}>
-            <Box sx={{ 
-              background: 'linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%)', 
-              p: 2,
-              borderBottom: '1px solid #dee2e6'
-            }}>
-              <Typography variant="h6" fontWeight="bold">
-                📈 Status Overview
-              </Typography>
-            </Box>
-            <CardContent>
-              <ReactEcharts 
-                option={barOpt} 
-                style={{ height: '250px' }}
-                opts={{ renderer: 'svg' }}
-              />
-            </CardContent>
-          </Card>
-        </Grid>
-
-        {/* Quick Actions */}
-        <Grid item xs={12} md={6}>
-          <Card elevation={4} sx={{ borderRadius: 3 }}>
-            <Box sx={{ 
-              background: 'linear-gradient(90deg, #f8f9fa 0%, #e9ecef 100%)', 
-              p: 2,
-              borderBottom: '1px solid #dee2e6'
-            }}>
-              <Typography variant="h6" fontWeight="bold">
-                ⚡ Quick Actions
-              </Typography>
-            </Box>
-            <CardContent>
-              <Grid container spacing={2}>
-                <Grid item xs={6}>
-                  <Paper 
-                    sx={{ 
-                      p: 2, 
-                      textAlign: 'center', 
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      '&:hover': { 
-                        bgcolor: '#f5f5f5', 
-                        transform: 'translateY(-2px)',
-                        boxShadow: 2
-                      }
-                    }}
-                  >
-                    <CheckCircle color="success" sx={{ fontSize: 40, mb: 1 }} />
-                    <Typography variant="body2" fontWeight="bold">
-                      Mark Resolved
-                    </Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={6}>
-                  <Paper 
-                    sx={{ 
-                      p: 2, 
-                      textAlign: 'center', 
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      '&:hover': { 
-                        bgcolor: '#f5f5f5', 
-                        transform: 'translateY(-2px)',
-                        boxShadow: 2
-                      }
-                    }}
-                  >
-                    <Assessment color="primary" sx={{ fontSize: 40, mb: 1 }} />
-                    <Typography variant="body2" fontWeight="bold">
-                      Generate Report
-                    </Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={6}>
-                  <Paper 
-                    sx={{ 
-                      p: 2, 
-                      textAlign: 'center', 
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      '&:hover': { 
-                        bgcolor: '#f5f5f5', 
-                        transform: 'translateY(-2px)',
-                        boxShadow: 2
-                      }
-                    }}
-                  >
-                    <LocationOn color="error" sx={{ fontSize: 40, mb: 1 }} />
-                    <Typography variant="body2" fontWeight="bold">
-                      Priority Areas
-                    </Typography>
-                  </Paper>
-                </Grid>
-                <Grid item xs={6}>
-                  <Paper 
-                    sx={{ 
-                      p: 2, 
-                      textAlign: 'center', 
-                      cursor: 'pointer',
-                      transition: 'all 0.2s',
-                      '&:hover': { 
-                        bgcolor: '#f5f5f5', 
-                        transform: 'translateY(-2px)',
-                        boxShadow: 2
-                      }
-                    }}
-                  >
-                    <Refresh color="info" sx={{ fontSize: 40, mb: 1 }} />
-                    <Typography variant="body2" fontWeight="bold">
-                      Bulk Update
-                    </Typography>
-                  </Paper>
-                </Grid>
-              </Grid>
-            </CardContent>
-          </Card>
-        </Grid>
-      </Grid>
-
-      {/* Footer Stats */}
-      <Paper 
-        sx={{ 
-          mt: 4, 
-          p: 3, 
-          background: 'linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%)',
-          borderRadius: 3
-        }}
-      >
-        <Grid container spacing={3} sx={{ textAlign: 'center' }}>
-          <Grid item xs={12} sm={3}>
-            <Typography variant="h4" fontWeight="bold" color="success.main">
-              {((stats.resolved / stats.totalReports) * 100 || 0).toFixed(1)}%
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Resolution Rate
-            </Typography>
-          </Grid>
-          <Grid item xs={12} sm={3}>
-            <Typography variant="h4" fontWeight="bold" color="primary.main">
-              2.3
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Avg. Response Time (days)
-            </Typography>
-          </Grid>
-          <Grid item xs={12} sm={3}>
-            <Typography variant="h4" fontWeight="bold" color="warning.main">
-              {stats.pending + stats.inProgress}
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Active Issues
-            </Typography>
-          </Grid>
-          <Grid item xs={12} sm={3}>
-            <Typography variant="h4" fontWeight="bold" color="info.main">
-              95%
-            </Typography>
-            <Typography variant="body2" color="text.secondary">
-              Citizen Satisfaction
-            </Typography>
-          </Grid>
-        </Grid>
-      </Paper>
-    </Box>
-  );
-}
+export default MapWidget;

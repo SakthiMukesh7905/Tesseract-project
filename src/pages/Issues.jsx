@@ -13,7 +13,8 @@ import {
   Tooltip,
   LinearProgress,
   Paper,
-  Grid
+  Grid,
+  Button
 } from "@mui/material";
 import {
   LocationOn,
@@ -24,13 +25,69 @@ import {
   Visibility,
   CheckCircle,
   Pending,
-  PlayArrow
+  PlayArrow,
+  Send
 } from "@mui/icons-material";
 
 export default function Issues() {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [stats, setStats] = useState({ pending: 0, inProgress: 0, resolved: 0 });
+  const [clusters, setClusters] = useState([]);
+  const [dedupLoading, setDedupLoading] = useState(false);
+  const [adminComments, setAdminComments] = useState({});
+
+  // Department mapping for display names
+  const departmentNames = {
+    'roads': 'Roads & Infrastructure',
+    'water': 'Water & Sanitation',
+    'waste': 'Waste Management',
+    'electricity': 'Electricity',
+    'parks': 'Parks & Recreation'
+  };
+
+  const handleAdminComment = (clusterId, comment) => {
+    setAdminComments(prev => ({
+      ...prev,
+      [clusterId]: comment
+    }));
+  };
+
+  const handleAcknowledge = async (cluster) => {
+    try {
+      const payload = {
+        clusterId: cluster.mainPost.id,
+        issues: cluster.issues.map(issue => issue.id),
+        adminComment: adminComments[cluster.mainPost.id] || '',
+        department: cluster.recommendedDepartment,
+        status: 'In Progress'
+      };
+
+await api.post('/admin/posts/acknowledge-cluster', payload);
+      
+      // Refresh clusters
+      handleDeduplicate();
+
+    } catch (err) {
+      console.error('Error acknowledging cluster:', err);
+      alert('Failed to acknowledge cluster');
+    }
+  };
+
+  // Deduplicate issues handler
+  const handleDeduplicate = async () => {
+    setDedupLoading(true);
+    try {
+      // Call backend API for deduplication (adjust route as needed)
+      const res = await api.get("/admin/posts/deduplicate");
+      setClusters(res.data.clusters || []);
+    } catch (err) {
+      setClusters([]);
+      console.error("Deduplication error:", err);
+    } finally {
+      setDedupLoading(false);
+    }
+  };
 
   // Function to convert coordinates to address
   const getAddressFromCoords = async (lat, lng) => {
@@ -67,7 +124,7 @@ export default function Issues() {
     const fetchPosts = async () => {
       try {
         setLoading(true);
-  const res = await api.get("/posts/admin/posts");
+        const res = await api.get("/posts/admin/posts");
 
         // Process data and get addresses
         const formattedPromises = res.data.map(async (post, idx) => {
@@ -116,9 +173,14 @@ export default function Issues() {
 
   const getStatusIcon = (status) => {
     switch (status) {
-      case "Resolved": return <CheckCircle />;
-      case "In Progress": return <PlayArrow />;
-      default: return <Pending />;
+      case "Resolved":
+        return <CheckCircle style={{ color: '#4caf50' }} />; // Green for success
+      case "In Progress":
+        return <PlayArrow style={{ color: '#1976d2' }} />; // Blue for progress
+      case "Pending":
+        return <Pending style={{ color: '#ff9800' }} />; // Orange for pending
+      default:
+        return <Pending style={{ color: '#bdbdbd' }} />; // Grey for unknown
     }
   };
 
@@ -333,6 +395,176 @@ export default function Issues() {
           </Card>
         </Grid>
       </Grid>
+
+      {/* Deduplicate Button and Clusters */}
+      <Box sx={{ mb: 3, textAlign: 'center' }}>
+        <button
+          onClick={handleDeduplicate}
+          disabled={dedupLoading}
+          style={{
+            padding: '10px 24px',
+            fontSize: '16px',
+            fontWeight: 'bold',
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            color: 'white',
+            border: 'none',
+            borderRadius: '8px',
+            cursor: dedupLoading ? 'not-allowed' : 'pointer',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
+          }}
+        >
+          {dedupLoading ? 'Clustering...' : 'Deduplicate Issues'}
+        </button>
+      </Box>
+
+      {clusters.length > 0 && (
+        <Box sx={{ mb: 3 }}>
+          <Typography variant="h6" fontWeight="bold" sx={{ mb: 2 }}>
+            🧩 Deduplicated Issue Clusters
+          </Typography>
+          {clusters.map((cluster, idx) => (
+            <Paper key={idx} sx={{ p: 3, mb: 3, bgcolor: '#f8f9fa' }}>
+              {/* Cluster Header */}
+              <Box sx={{ mb: 2, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <Typography variant="h6" fontWeight="bold">
+                  Cluster #{idx + 1} ({cluster.issues.length} related issues)
+                </Typography>
+                <Chip
+                  label={`Within 1 km radius`}
+                  icon={<LocationOn />}
+                  color="primary"
+                  variant="outlined"
+                />
+              </Box>
+
+              {/* Issues List */}
+              <Box sx={{ mb: 3 }}>
+                {cluster.issues.map((issue, i) => (
+                  <Paper 
+                    key={i} 
+                    sx={{ 
+                      p: 2, 
+                      mb: 2, 
+                      bgcolor: 'white',
+                      border: '1px solid #e0e0e0'
+                    }}
+                  >
+                    {/* Issue Header */}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2, mb: 1 }}>
+                      <Avatar sx={{ bgcolor: '#1976d2' }}>
+                        {issue.userName.charAt(0).toUpperCase()}
+                      </Avatar>
+                      <Box>
+                        <Typography variant="subtitle1" fontWeight="bold">
+                          {issue.userName}
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Reported on {new Date(issue.createdAt).toLocaleString()}
+                        </Typography>
+                      </Box>
+                    </Box>
+
+                    {/* Issue Content */}
+                    <Typography variant="body1" sx={{ mb: 2 }}>
+                      {issue.description}
+                    </Typography>
+
+                    {/* Location */}
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
+                      <LocationOn color="action" />
+                      <Typography variant="body2">
+                        {issue.address || `${issue.latitude}, ${issue.longitude}`}
+                      </Typography>
+                    </Box>
+
+                    {/* Media Attachments */}
+                    {issue.media && issue.media.length > 0 && (
+                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap', mb: 2 }}>
+                        {issue.media.map((media, index) => (
+                          <Box
+                            key={index}
+                            component="img"
+                            src={`http://localhost:5000/${media}`}
+                            sx={{
+                              width: 120,
+                              height: 120,
+                              objectFit: 'cover',
+                              borderRadius: 1,
+                              cursor: 'pointer'
+                            }}
+                            onClick={() => window.open(`http://localhost:5000/${media}`, '_blank')}
+                          />
+                        ))}
+                      </Box>
+                    )}
+
+                    {/* Voice Message if any */}
+                    {issue.voiceMsg && (
+                      <Box sx={{ mb: 2 }}>
+                        <audio controls src={`http://localhost:5000/${issue.voiceMsg}`} />
+                      </Box>
+                    )}
+                  </Paper>
+                ))}
+              </Box>
+
+              {/* Admin Actions */}
+              <Box sx={{ bgcolor: 'white', p: 2, borderRadius: 1 }}>
+                <Typography variant="subtitle1" fontWeight="bold" gutterBottom>
+                  Admin Actions
+                </Typography>
+
+                {/* Recommended Department */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" gutterBottom>
+                    AI Recommended Department:
+                  </Typography>
+                  <Chip
+                    label={departmentNames[cluster.recommendedDepartment]}
+                    color="primary"
+                    icon={<LocationOn />}
+                    sx={{ fontWeight: 'bold' }}
+                  />
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                    Based on issue descriptions and patterns
+                  </Typography>
+                </Box>
+
+                {/* Admin Comment */}
+                <Box sx={{ mb: 2 }}>
+                  <Typography variant="body2" gutterBottom>
+                    Add Comment:
+                  </Typography>
+                  <textarea
+                    value={adminComments[cluster.mainPost.id] || ''}
+                    onChange={(e) => handleAdminComment(cluster.mainPost.id, e.target.value)}
+                    placeholder="Add instructions or notes for the department..."
+                    style={{
+                      width: '100%',
+                      minHeight: '80px',
+                      padding: '8px',
+                      borderRadius: '4px',
+                      border: '1px solid #ddd',
+                      marginBottom: '8px'
+                    }}
+                  />
+                </Box>
+
+                {/* Acknowledge Button */}
+                <Button
+                  variant="contained"
+                  color="primary"
+                  onClick={() => handleAcknowledge(cluster)}
+                  startIcon={<CheckCircle />}
+                  sx={{ width: '100%' }}
+                >
+                  Acknowledge & Forward to {departmentNames[cluster.recommendedDepartment]}
+                </Button>
+              </Box>
+            </Paper>
+          ))}
+        </Box>
+      )}
 
       {/* Main Data Grid */}
       <Card elevation={3}>
