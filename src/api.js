@@ -15,4 +15,17 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Add response interceptor to handle errors
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Unauthorized - token may be invalid or expired
+      localStorage.removeItem("adminToken");
+      localStorage.removeItem("adminInfo");
+    }
+    return Promise.reject(error);
+  }
+);
+
 export default api;

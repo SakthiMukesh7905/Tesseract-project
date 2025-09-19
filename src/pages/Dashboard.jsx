@@ -1,4 +1,3 @@
-
 import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import { Box, Typography, Chip, CircularProgress, Alert } from '@mui/material';
@@ -6,6 +5,7 @@ import { LocationOn, Warning, CheckCircle, Pending, PlayArrow } from '@mui/icons
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import api from '../api';
+import { useAuth } from '../utils/AuthContext';
 
 // Fix for default markers in react-leaflet
 delete L.Icon.Default.prototype._getIconUrl;
@@ -67,6 +67,7 @@ const FitBounds = ({ positions }) => {
 };
 
 const MapWidget = () => {
+  const { getUserRole } = useAuth();
   const [issues, setIssues] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -81,8 +82,17 @@ const MapWidget = () => {
     const fetchIssues = async () => {
       try {
         setLoading(true);
-        // Use Axios with JWT
-        const response = await api.get('/posts/admin/posts');
+        const userRole = getUserRole();
+        
+        let response;
+        if (userRole === "superadmin") {
+          // Superadmin can access all posts
+          response = await api.get('/admin/posts/all');
+        } else {
+          // Regular admin also uses all posts endpoint
+          response = await api.get('/admin/posts/all');
+        }
+        
         const data = response.data;
 
         // Filter out issues without valid coordinates
@@ -127,7 +137,7 @@ const MapWidget = () => {
     };
 
     fetchIssues();
-  }, []);
+  }, [getUserRole]);
 
   const getMarkerColor = (status) => {
     switch (status) {

@@ -2,11 +2,13 @@
 import { Box, Button, Card, CardContent, TextField, Typography } from "@mui/material";
 import { useNavigate } from "react-router-dom";
 import { useState } from "react";
+import { useAuth } from "../utils/AuthContext";
 import api from "../api";
 
 
 export default function Login() {
   const nav = useNavigate();
+  const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -16,11 +18,25 @@ export default function Login() {
     setLoading(true);
     setErr("");
     try {
+      // Use the unified login endpoint from backend
       const res = await api.post("/admin/login", { email, password });
-      localStorage.setItem("adminToken", res.data.token);
-      // Optionally store admin info
-      localStorage.setItem("adminInfo", JSON.stringify(res.data.admin));
-      nav("/dashboard");
+      
+      // Store token and user data from backend response
+      login(res.data.token, res.data.user);
+      
+      // Navigate based on user role from backend
+      const userRole = res.data.user.role;
+      let redirectPath = "/dashboard";
+      
+      if (userRole === "department") {
+        redirectPath = "/department";
+      } else if (userRole === "superadmin") {
+        redirectPath = "/dashboard";
+      } else if (userRole === "admin") {
+        redirectPath = "/dashboard";
+      }
+      
+      nav(redirectPath);
     } catch (e) {
       setErr(e?.response?.data?.msg || "Login failed");
     } finally {
@@ -32,7 +48,14 @@ export default function Login() {
     <Box sx={{ display: "flex", height: "100vh", alignItems: "center", justifyContent: "center", bgcolor: "#F5F8FA" }}>
       <Card sx={{ width: 340, p: 3 }}>
         <CardContent>
-          <Typography variant="h5" mb={2}>Admin Login</Typography>
+          <Typography variant="h5" mb={2}>
+            Admin Portal Login
+          </Typography>
+          
+          <Typography variant="body2" color="text.secondary" mb={2}>
+            Enter your credentials to access the admin portal. Your role will be determined automatically.
+          </Typography>
+          
           <TextField
             fullWidth
             label="Email"

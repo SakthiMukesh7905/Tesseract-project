@@ -1,7 +1,19 @@
-// Issues.jsx (AdminIssues) - Enhanced Version with Geocoding
+// Issues.jsx (AdminIssues) - Enhanced Version with Stats API
 import React, { useState, useEffect } from "react";
 import api from "../api";
+import { useAuth } from "../utils/AuthContext";
 import { DataGrid } from "@mui/x-data-grid";
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
+
+// Fix for default markers in react-leaflet
+delete L.Icon.Default.prototype._getIconUrl;
+L.Icon.Default.mergeOptions({
+  iconRetinaUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon-2x.png',
+  iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-icon.png',
+  shadowUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/images/marker-shadow.png',
+});
 import { 
   Card, 
   CardContent, 
@@ -30,9 +42,11 @@ import {
 } from "@mui/icons-material";
 
 export default function Issues() {
+  const { getUserRole } = useAuth();
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({ pending: 0, inProgress: 0, resolved: 0 });
+  const [stats, setStats] = useState({ pending: 0, inProgress: 0, resolved: 0, totalReports: 0 });
+  const [statsLoading, setStatsLoading] = useState(true);
   const [clusters, setClusters] = useState([]);
   const [dedupLoading, setDedupLoading] = useState(false);
   const [adminComments, setAdminComments] = useState({});
@@ -63,14 +77,37 @@ export default function Issues() {
         status: 'In Progress'
       };
 
-await api.post('/admin/posts/acknowledge-cluster', payload);
+      await api.post('/admin/posts/acknowledge-cluster', payload);
       
-      // Refresh clusters
+      // Refresh clusters and stats
       handleDeduplicate();
+      fetchStats();
 
     } catch (err) {
       console.error('Error acknowledging cluster:', err);
       alert('Failed to acknowledge cluster');
+    }
+  };
+
+  // Fetch statistics from the API
+  const fetchStats = async () => {
+    setStatsLoading(true);
+    try {
+      console.log("📊 Fetching stats from /posts/stats");
+      const res = await api.get("/posts/stats");
+      console.log('📊 Stats received:', res.data);
+      setStats({
+        pending: res.data.pending || 0,
+        inProgress: res.data.inProgress || 0,
+        resolved: res.data.resolved || 0,
+        totalReports: res.data.totalReports || 0
+      });
+    } catch (err) {
+      console.error("❌ Error fetching stats:", err);
+      // Set default values if API call fails
+      setStats({ pending: 0, inProgress: 0, resolved: 0, totalReports: 0 });
+    } finally {
+      setStatsLoading(false);
     }
   };
 
@@ -89,60 +126,37 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
     }
   };
 
-  // Function to convert coordinates to address
-  const getAddressFromCoords = async (lat, lng) => {
-    try {
-      // Using OpenStreetMap Nominatim API (free, no API key required)
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&addressdetails=1`
-      );
-      const data = await response.json();
-      
-      if (data && data.display_name) {
-        // Extract relevant parts of address
-        const address = data.address || {};
-        const street = address.road || address.pedestrian || address.footway || '';
-        const area = address.suburb || address.neighbourhood || address.village || '';
-        const city = address.city || address.town || address.municipality || '';
-        
-        // Create a concise address
-        let shortAddress = '';
-        if (street) shortAddress += street;
-        if (area && shortAddress) shortAddress += ', ' + area;
-        if (city && shortAddress) shortAddress += ', ' + city;
-        
-        return shortAddress || data.display_name.split(',').slice(0, 3).join(', ');
-      }
-      return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    } catch (error) {
-      console.error('Geocoding error:', error);
-      return `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
-    }
-  };
-
   useEffect(() => {
     const fetchPosts = async () => {
       try {
         setLoading(true);
-        const res = await api.get("/posts/admin/posts");
+        const userRole = getUserRole();
+        console.log("🔑 Issues - User role:", userRole);
+        
+        let res;
+        if (userRole === "superadmin") {
+          // Superadmin can access all posts
+          res = await api.get("/admin/posts/all");
+          console.log("📊 Issues - Fetched all posts for superadmin:", res.data.length);
+        } else {
+          // Regular admin also uses all posts endpoint
+          res = await api.get("/admin/posts/all");
+          console.log("📊 Issues - Fetched all posts for admin:", res.data.length);
+        }
 
-        // Process data and get addresses
-        const formattedPromises = res.data.map(async (post, idx) => {
+        console.log("📊 Issues - Raw response data:", res.data);
+
+        // Process data without address conversion
+        const formatted = res.data.map((post, idx) => {
           const latitude = post.location?.coordinates?.[1];
           const longitude = post.location?.coordinates?.[0];
-          
-          let address = "No location";
-          if (latitude && longitude && latitude !== 0 && longitude !== 0) {
-            address = await getAddressFromCoords(latitude, longitude);
-          }
 
           return {
-            id: post._id || idx,
+            id: post._id || post.id || idx,
             description: post.description || "No description",
             userName: post.user?.username || post.userName || "Anonymous",
             userEmail: post.user?.email || post.userEmail || "N/A",
             location: post.location,
-            address: address,
             createdAt: post.createdAt,
             media: post.media || [],
             voiceMsg: post.voiceMsg,
@@ -152,14 +166,7 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
           };
         });
 
-        const formatted = await Promise.all(formattedPromises);
         setRows(formatted);
-
-        // Calculate statistics
-        const pending = formatted.filter(row => row.status === "Pending").length;
-        const inProgress = formatted.filter(row => row.status === "In Progress").length;
-        const resolved = formatted.filter(row => row.status === "Resolved").length;
-        setStats({ pending, inProgress, resolved });
 
       } catch (err) {
         console.error("Error fetching posts:", err);
@@ -168,14 +175,17 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
       }
     };
 
+    // Fetch both posts and stats
     fetchPosts();
-  }, []);
+    fetchStats();
+  }, [getUserRole]);
 
   const getStatusIcon = (status) => {
     switch (status) {
       case "Resolved":
         return <CheckCircle style={{ color: '#4caf50' }} />; // Green for success
       case "In Progress":
+      case "InProgress":
         return <PlayArrow style={{ color: '#1976d2' }} />; // Blue for progress
       case "Pending":
         return <Pending style={{ color: '#ff9800' }} />; // Orange for pending
@@ -187,6 +197,7 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
   const getStatusColor = (status) => {
     switch (status) {
       case "Resolved": return "success";
+      case "InProgress": 
       case "In Progress": return "primary";
       default: return "warning";
     }
@@ -229,17 +240,28 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
     },
 
     {
-      field: "address",
+      field: "coordinates",
       headerName: "Location",
       width: 300,
       renderCell: (params) => (
         <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, py: 1 }}>
           <LocationOn color="action" fontSize="small" />
-          <Tooltip title={`Coordinates: ${params.row.latitude?.toFixed(6)}, ${params.row.longitude?.toFixed(6)}`}>
-            <Typography variant="body2" sx={{ cursor: 'help' }}>
-              {params.row.address}
-            </Typography>
-          </Tooltip>
+          <Box>
+            {params.row.latitude && params.row.longitude ? (
+              <>
+                <Typography variant="body2">
+                  Lat: {params.row.latitude.toFixed(6)}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Lng: {params.row.longitude.toFixed(6)}
+                </Typography>
+              </>
+            ) : (
+              <Typography variant="body2" color="text.secondary">
+                No location data
+              </Typography>
+            )}
+          </Box>
         </Box>
       )
     },
@@ -344,16 +366,20 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
 
       {/* Statistics Cards */}
       <Grid container spacing={3} sx={{ mb: 3 }}>
-        <Grid item xs={12} sm={4}>
+        <Grid item xs={12} sm={3}>
           <Card sx={{ 
             background: 'linear-gradient(135deg, #ff9a9e 0%, #fecfef 100%)',
             color: 'white'
           }}>
             <CardContent sx={{ textAlign: 'center' }}>
               <Pending sx={{ fontSize: 40, mb: 1 }} />
-              <Typography variant="h4" fontWeight="bold">
-                {stats.pending}
-              </Typography>
+              {statsLoading ? (
+                <LinearProgress sx={{ mb: 2 }} />
+              ) : (
+                <Typography variant="h4" fontWeight="bold">
+                  {stats.pending}
+                </Typography>
+              )}
               <Typography variant="body1">
                 Pending Issues
               </Typography>
@@ -361,16 +387,20 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
           </Card>
         </Grid>
         
-        <Grid item xs={12} sm={4}>
+        <Grid item xs={12} sm={3}>
           <Card sx={{ 
             background: 'linear-gradient(135deg, #a8edea 0%, #fed6e3 100%)',
             color: '#333'
           }}>
             <CardContent sx={{ textAlign: 'center' }}>
               <PlayArrow sx={{ fontSize: 40, mb: 1 }} />
-              <Typography variant="h4" fontWeight="bold">
-                {stats.inProgress}
-              </Typography>
+              {statsLoading ? (
+                <LinearProgress sx={{ mb: 2 }} />
+              ) : (
+                <Typography variant="h4" fontWeight="bold">
+                  {stats.inProgress}
+                </Typography>
+              )}
               <Typography variant="body1">
                 In Progress
               </Typography>
@@ -378,45 +408,117 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
           </Card>
         </Grid>
         
-        <Grid item xs={12} sm={4}>
+        <Grid item xs={12} sm={3}>
           <Card sx={{ 
             background: 'linear-gradient(135deg, #a8e6cf 0%, #dcedc8 100%)',
             color: '#333'
           }}>
             <CardContent sx={{ textAlign: 'center' }}>
               <CheckCircle sx={{ fontSize: 40, mb: 1 }} />
-              <Typography variant="h4" fontWeight="bold">
-                {stats.resolved}
-              </Typography>
+              {statsLoading ? (
+                <LinearProgress sx={{ mb: 2 }} />
+              ) : (
+                <Typography variant="h4" fontWeight="bold">
+                  {stats.resolved}
+                </Typography>
+              )}
               <Typography variant="body1">
                 Resolved
               </Typography>
             </CardContent>
           </Card>
         </Grid>
+
+        <Grid item xs={12} sm={3}>
+          <Card sx={{ 
+            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+            color: 'white'
+          }}>
+            <CardContent sx={{ textAlign: 'center' }}>
+              <Person sx={{ fontSize: 40, mb: 1 }} />
+              {statsLoading ? (
+                <LinearProgress sx={{ mb: 2 }} />
+              ) : (
+                <Typography variant="h4" fontWeight="bold">
+                  {stats.totalReports}
+                </Typography>
+              )}
+              <Typography variant="body1">
+                Total Reports
+              </Typography>
+            </CardContent>
+          </Card>
+        </Grid>
       </Grid>
 
-      {/* Deduplicate Button and Clusters */}
+      {/* Refresh Stats Button */}
       <Box sx={{ mb: 3, textAlign: 'center' }}>
-        <button
+        <Button
+          onClick={fetchStats}
+          disabled={statsLoading}
+          variant="outlined"
+          color="primary"
+          sx={{ mr: 2 }}
+        >
+          {statsLoading ? 'Refreshing...' : 'Refresh Stats'}
+        </Button>
+        
+        <Button
           onClick={handleDeduplicate}
           disabled={dedupLoading}
-          style={{
-            padding: '10px 24px',
-            fontSize: '16px',
-            fontWeight: 'bold',
-            background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-            color: 'white',
-            border: 'none',
-            borderRadius: '8px',
-            cursor: dedupLoading ? 'not-allowed' : 'pointer',
-            boxShadow: '0 2px 8px rgba(0,0,0,0.1)'
-          }}
+          variant="contained"
+          color="primary"
         >
           {dedupLoading ? 'Clustering...' : 'Deduplicate Issues'}
-        </button>
+        </Button>
       </Box>
 
+      {/* Map Section 
+      <Card elevation={3} sx={{ mb: 3 }}>
+        <CardContent>
+          <Typography variant="h6" fontWeight="bold" sx={{ mb: 2 }}>
+            🗺️ Issues Map View
+          </Typography>
+          <Box sx={{ height: '400px', width: '100%' }}>
+            <MapContainer
+              center={[12.9716, 77.5946]} // Default to Bangalore
+              zoom={11}
+              style={{ height: '100%', width: '100%' }}
+              scrollWheelZoom={true}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+              />
+              
+              {rows.filter(row => row.latitude && row.longitude).map((issue) => (
+                <Marker
+                  key={issue.id}
+                  position={[issue.latitude, issue.longitude]}
+                >
+                  <Popup>
+                    <Box sx={{ minWidth: 200 }}>
+                      <Typography variant="subtitle2" fontWeight="bold">
+                        {issue.description}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Reported by: {issue.userName}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Status: {issue.status}
+                      </Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Date: {new Date(issue.createdAt).toLocaleDateString()}
+                      </Typography>
+                    </Box>
+                  </Popup>
+                </Marker>
+              ))}
+            </MapContainer>
+          </Box>
+        </CardContent>
+      </Card>
+*/}
       {clusters.length > 0 && (
         <Box sx={{ mb: 3 }}>
           <Typography variant="h6" fontWeight="bold" sx={{ mb: 2 }}>
@@ -469,11 +571,14 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
                       {issue.description}
                     </Typography>
 
-                    {/* Location */}
+                    {/* Location - Just showing coordinates */}
                     <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 2 }}>
                       <LocationOn color="action" />
                       <Typography variant="body2">
-                        {issue.address || `${issue.latitude}, ${issue.longitude}`}
+                        {issue.latitude && issue.longitude 
+                          ? `${issue.latitude.toFixed(6)}, ${issue.longitude.toFixed(6)}`
+                          : 'No location data'
+                        }
                       </Typography>
                     </Box>
 
@@ -624,7 +729,7 @@ await api.post('/admin/posts/acknowledge-cluster', payload);
       {/* Footer */}
       <Paper sx={{ mt: 3, p: 2, textAlign: 'center', bgcolor: '#f8f9fa' }}>
         <Typography variant="body2" color="text.secondary">
-          💡 Tip: Hover over coordinates to see exact GPS location • Click on reporter avatars for contact details
+          💡 Stats are fetched from the backend API • Click refresh to get latest counts
         </Typography>
       </Paper>
     </Box>
